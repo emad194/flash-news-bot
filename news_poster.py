@@ -100,7 +100,8 @@ async def main():
                             os.remove(file_path)
 
                     if full_content.strip():
-                        builder = EventBuilder.text_note(full_content, [])
+                        # تعديل السطر هنا بحذف الـ []
+                        builder = EventBuilder.text_note(full_content)
                         await client.send_event_builder(builder)
                         print(f"تم بنجاح نشر خبر جديد من قناة: {channel}")
                         save_history(post_unique_id)
