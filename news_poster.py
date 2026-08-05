@@ -4,12 +4,16 @@ import feedparser
 import requests
 import re
 import html
+from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from nostr_sdk import Keys, Client, EventBuilder, NostrSigner, RelayUrl
 
 NOSTR_NSEC = os.environ.get("NOSTR_NSEC", "").strip()
 if not NOSTR_NSEC:
     raise ValueError("متغير NOSTR_NSEC مفقود في GitHub Secrets")
+
+# رابط صورة افتراضية (ضع رابط لوجو حسابك هنا ليتم استخدامه عند عدم وجود صورة بالخبر)
+DEFAULT_IMAGE_URL = "https://nostr.build/i/nostr_build_6443c2d4fa.jpg"
 
 RSS_FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
@@ -48,10 +52,11 @@ def clean_text(raw_text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-def extract_media(entry):
+def extract_media(entry, feed_url):
     video_url = None
     image_url = None
 
+    # 1. فحص Enclosures
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             mime_type = enc.get('type', '')
@@ -62,11 +67,13 @@ def extract_media(entry):
             elif mime_type.startswith('image/'):
                 image_url = href
 
+    # 2. فحص Media RSS
     if not image_url and 'media_content' in entry and len(entry.media_content) > 0:
         image_url = entry.media_content[0].get('url')
     elif not image_url and 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
         image_url = entry.media_thumbnail[0].get('url')
 
+    # 3. البحث العميق داخل كود الـ HTML للمقال
     if not image_url and not video_url:
         html_sources = []
         if 'summary' in entry:
@@ -80,9 +87,16 @@ def extract_media(entry):
             soup = BeautifulSoup(full_html, 'html.parser')
             img_tag = soup.find('img')
             if img_tag:
-                image_url = img_tag.get('src')
-                if not image_url and img_tag.get('srcset'):
-                    image_url = img_tag['srcset'].split(',')[0].split(' ')[0]
+                raw_img = img_tag.get('src')
+                if not raw_img and img_tag.get('srcset'):
+                    raw_img = img_tag['srcset'].split(',')[0].split(' ')[0]
+                if raw_img:
+                    # تحويل الرابط النسبي إلى رابط كامل
+                    image_url = urljoin(feed_url, raw_img)
+
+    # 4. استخدام الصورة الافتراضية إذا لم تجد أي صورة/فيديو
+    if not image_url and not video_url:
+        image_url = DEFAULT_IMAGE_URL
 
     return video_url, image_url
 
@@ -125,11 +139,11 @@ async def main():
                 if not post_id or post_id in history:
                     continue
 
-                # تطبيق دالة التنظيف الموحدة
+                # تنظيف النصوص
                 title = clean_text(entry.get('title', ''))
                 summary = clean_text(entry.get('summary', ''))
 
-                video_url, image_url = extract_media(entry)
+                video_url, image_url = extract_media(entry, feed_url)
                 media_link = None
 
                 if video_url:
