@@ -3,6 +3,7 @@ import asyncio
 import requests
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
 from nostr_sdk import Keys, Client, EventBuilder, NostrSigner, RelayUrl
 
 # 1. قراءة المتغيرات وتفادي الأخطاء
@@ -49,10 +50,15 @@ def clean_text(text):
     lines = text.split("\n")
     cleaned = []
     for line in lines:
+        # إزالة روابط الترويج والاشتراك
         if "t.me/" in line or "join" in line.lower() or "subscribe" in line.lower():
             continue
         cleaned.append(line)
-    return "\n".join(cleaned).strip()
+    
+    result = "\n".join(cleaned).strip()
+    # تنظيف الأقواس التنسيقية الزائدة إن وجدت
+    result = result.replace("[**", "**").replace("**]", "**")
+    return result
 
 async def main():
     history = load_history()
@@ -66,7 +72,7 @@ async def main():
     await client.add_relay(RelayUrl.parse("wss://nos.lol"))
     await client.connect()
 
-    # 3. الاتصال بـ Telegram عبر Userbot (StringSession)
+    # 3. الاتصال بـ Telegram عبر Userbot
     tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await tg_client.start()
     
@@ -85,26 +91,33 @@ async def main():
                     continue
 
                 text = clean_text(msg.text or "")
+                media_url = None
                 
-                if text or msg.media:
-                    full_content = text
-                    
-                    if msg.media and hasattr(msg.media, 'photo'):
-                        file_path = await tg_client.download_media(msg)
-                        with open(file_path, 'rb') as f:
-                            resp = requests.post('https://nostr.build/api/v2/upload/files', files={'file': f})
-                            if resp.status_code == 200:
-                                media_url = resp.json()['data'][0]['url']
-                                full_content += f"\n\n{media_url}"
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
+                # جلب الصور أو الفيديوهات أو معاينات الصفحات
+                if msg.media:
+                    file_path = await tg_client.download_media(msg)
+                    if file_path and os.path.exists(file_path):
+                        try:
+                            with open(file_path, 'rb') as f:
+                                resp = requests.post('https://nostr.build/api/v2/upload/files', files={'file': f})
+                                if resp.status_code == 200:
+                                    media_url = resp.json()['data'][0]['url']
+                        except Exception as upload_err:
+                            print(f"خطأ أثناء رفع الميديا: {upload_err}")
+                        finally:
+                            if os.path.exists(file_path):
+                                os.remove(file_path)
 
-                    if full_content.strip():
-                        # تعديل السطر هنا بحذف الـ []
-                        builder = EventBuilder.text_note(full_content)
-                        await client.send_event_builder(builder)
-                        print(f"تم بنجاح نشر خبر جديد من قناة: {channel}")
-                        save_history(post_unique_id)
+                # تجميع محتوى المنشور النهائى
+                full_content = text
+                if media_url:
+                    full_content = f"{full_content}\n\n{media_url}".strip()
+
+                if full_content.strip():
+                    builder = EventBuilder.text_note(full_content)
+                    await client.send_event_builder(builder)
+                    print(f"تم بنجاح نشر خبر جديد مع الميديا من قناة: {channel}")
+                    save_history(post_unique_id)
 
             except Exception as e:
                 print(f"خطأ أثناء فحص القناة {channel}: {e}")
