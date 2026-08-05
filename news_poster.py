@@ -2,18 +2,19 @@ import os
 import asyncio
 import requests
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from nostr_sdk import Keys, Client, EventBuilder, NostrSigner, RelayUrl
 
 # 1. قراءة المتغيرات وتفادي الأخطاء
 api_id_env = os.environ.get("TELEGRAM_API_ID", "").strip()
 api_hash_env = os.environ.get("TELEGRAM_API_HASH", "").strip()
-bot_token_env = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+session_string_env = os.environ.get("TELEGRAM_SESSION_STRING", "").strip()
 nostr_nsec_env = os.environ.get("NOSTR_NSEC", "").strip()
 
 missing = []
 if not api_id_env: missing.append("TELEGRAM_API_ID")
 if not api_hash_env: missing.append("TELEGRAM_API_HASH")
-if not bot_token_env: missing.append("TELEGRAM_BOT_TOKEN")
+if not session_string_env: missing.append("TELEGRAM_SESSION_STRING")
 if not nostr_nsec_env: missing.append("NOSTR_NSEC")
 
 if missing:
@@ -21,7 +22,7 @@ if missing:
 
 API_ID = int(api_id_env)
 API_HASH = api_hash_env
-BOT_TOKEN = bot_token_env
+SESSION_STRING = session_string_env
 NOSTR_NSEC = nostr_nsec_env
 
 CHANNELS = [
@@ -65,14 +66,13 @@ async def main():
     await client.add_relay(RelayUrl.parse("wss://nos.lol"))
     await client.connect()
 
-    # 3. الاتصال بـ Telegram عبر البوت
-    tg_client = TelegramClient('bot_session', API_ID, API_HASH)
-    await tg_client.start(bot_token=BOT_TOKEN)
+    # 3. الاتصال بـ Telegram عبر Userbot (StringSession)
+    tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+    await tg_client.start()
     
     async with tg_client:
         for channel in CHANNELS:
             try:
-                # استخدام get_messages المباشرة المسموحة للبوتات
                 messages = await tg_client.get_messages(channel, limit=1)
                 if not messages:
                     continue
