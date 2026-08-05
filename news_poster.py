@@ -3,6 +3,7 @@ import asyncio
 import feedparser
 import requests
 import re
+import html
 from bs4 import BeautifulSoup
 from nostr_sdk import Keys, Client, EventBuilder, NostrSigner, RelayUrl
 
@@ -10,7 +11,6 @@ NOSTR_NSEC = os.environ.get("NOSTR_NSEC", "").strip()
 if not NOSTR_NSEC:
     raise ValueError("متغير NOSTR_NSEC مفقود في GitHub Secrets")
 
-# قائمة مصادر الأخبار المتنوعة شاملة The Verge, Reuters, Bloomberg
 RSS_FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://techcrunch.com/feed/",
@@ -33,11 +33,25 @@ def save_history(post_id):
     with open(HISTORY_FILE, "a") as f:
         f.write(f"{post_id}\n")
 
+def clean_text(raw_text):
+    if not raw_text:
+        return ""
+    # 1. فك تشفير رموز HTML مثل &#8230; و &amp;
+    text = html.unescape(raw_text)
+    # 2. إزالة وسوم الـ HTML
+    text = re.sub(r'<[^>]+>', '', text)
+    # 3. إزالة النجوم والرموز الغريبة
+    text = text.replace('*', '')
+    # 4. إزالة روابط المراجع المضلعة مثل [bfi.org] أو [&#8230;]
+    text = re.sub(r'\[.*?\]', '', text)
+    # 5. تنظيف المساحات الزائدة
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
 def extract_media(entry):
     video_url = None
     image_url = None
 
-    # 1. فحص ملفات الميديا المدمجة (Enclosures)
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             mime_type = enc.get('type', '')
@@ -48,20 +62,27 @@ def extract_media(entry):
             elif mime_type.startswith('image/'):
                 image_url = href
 
-    # 2. فحص الوسائط الخاصة بـ Media RSS (تستخدمها Reuters و Bloomberg بكثرة)
     if not image_url and 'media_content' in entry and len(entry.media_content) > 0:
         image_url = entry.media_content[0].get('url')
     elif not image_url and 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
         image_url = entry.media_thumbnail[0].get('url')
 
-    # 3. كشط وسوم <img> من محتوى HTML الخاص بمقالات The Verge و Reuters
     if not image_url and not video_url:
-        content_html = entry.get('summary', '') + entry.get('content', [{}])[0].get('value', '')
-        if content_html:
-            soup = BeautifulSoup(content_html, 'html.parser')
+        html_sources = []
+        if 'summary' in entry:
+            html_sources.append(entry.summary)
+        if 'content' in entry:
+            for c in entry.content:
+                html_sources.append(c.get('value', ''))
+        
+        full_html = " ".join(html_sources)
+        if full_html:
+            soup = BeautifulSoup(full_html, 'html.parser')
             img_tag = soup.find('img')
-            if img_tag and img_tag.get('src'):
-                image_url = img_tag['src']
+            if img_tag:
+                image_url = img_tag.get('src')
+                if not image_url and img_tag.get('srcset'):
+                    image_url = img_tag['srcset'].split(',')[0].split(' ')[0]
 
     return video_url, image_url
 
@@ -99,18 +120,14 @@ async def main():
             if not feed.entries:
                 continue
 
-            # معالجة أول خبرين من كل مصدر لتنوع التغذية
             for entry in feed.entries[:2]:
                 post_id = entry.get('id') or entry.get('link')
                 if not post_id or post_id in history:
                     continue
 
-                # تنظيف وتنسيق العنوان
-                title = entry.get('title', '').strip().replace('*', '')
-                summary_raw = entry.get('summary', '').strip()
-                
-                # إزالة أي وسوم HTML زائدة
-                summary = re.sub(r'<[^>]+>', '', summary_raw).strip()
+                # تطبيق دالة التنظيف الموحدة
+                title = clean_text(entry.get('title', ''))
+                summary = clean_text(entry.get('summary', ''))
 
                 video_url, image_url = extract_media(entry)
                 media_link = None
@@ -123,14 +140,13 @@ async def main():
                 elif image_url:
                     media_link = upload_to_nostr_build(image_url, is_video=False)
 
-                # صياغة المنشور الصافي
                 post_text = f"{title}\n\n{summary}"
                 if media_link:
                     post_text += f"\n\n{media_link}"
 
                 builder = EventBuilder.text_note(post_text)
                 await client.send_event_builder(builder)
-                print(f"تم بنجاح نشر خبر من {feed_url}: {title}")
+                print(f"تم بنجاح نشر: {title}")
                 save_history(post_id)
 
         except Exception as e:
