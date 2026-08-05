@@ -80,26 +80,32 @@ def extract_media(entry, feed_url):
             elif mime_type.startswith('image/'):
                 image_url = href
 
-    # 2. فحص Media RSS الخاصة بوكالات الأخبار
+    # 2. فحص Media Content أولاً بدلاً من المصغرات لجلب الدقة العالية
     if not image_url and 'media_content' in entry and len(entry.media_content) > 0:
         image_url = entry.media_content[0].get('url')
-    elif not image_url and 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
-        image_url = entry.media_thumbnail[0].get('url')
 
-    # 3. فحص الـ HTML مع تصفية الإعلانات والأيقونات
+    # 3. فحص الـ HTML وجلب أعلى دقة متوفرة من srcset أو src
     if not image_url and not video_url:
         html_sources = []
-        if 'summary' in entry:
-            html_sources.append(entry.summary)
         if 'content' in entry:
             for c in entry.content:
                 html_sources.append(c.get('value', ''))
+        if 'summary' in entry:
+            html_sources.append(entry.summary)
         
         full_html = " ".join(html_sources)
         if full_html:
             soup = BeautifulSoup(full_html, 'html.parser')
             for img_tag in soup.find_all('img'):
-                src = img_tag.get('src') or (img_tag.get('srcset', '').split(',')[0].split(' ')[0] if img_tag.get('srcset') else None)
+                # استخدام أحدث/أعلى دقة من srcset إن وجد
+                src = None
+                if img_tag.get('srcset'):
+                    srcset_parts = img_tag['srcset'].split(',')
+                    # اختيار الصورة الأخيرة في القائمة لأنها تكون بأعلى دقة عادةً
+                    src = srcset_parts[-1].strip().split(' ')[0]
+                if not src:
+                    src = img_tag.get('src')
+                
                 if src:
                     bad_keywords = ['icon', 'avatar', 'logo', 'widget', 'banner', 'ad-', 'meme', 'social', '8Z4v']
                     if any(bad in src.lower() for bad in bad_keywords):
@@ -107,32 +113,11 @@ def extract_media(entry, feed_url):
                     image_url = urljoin(feed_url, src)
                     break
 
+    # 4. التفكير بالصورة المصغرة فقط كخيار أخير إذا لم تتوفر دقة عالية
+    if not image_url and not video_url and 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
+        image_url = entry.media_thumbnail[0].get('url')
+
     return video_url, image_url
-
-def upload_to_nostr_build(media_url, is_video=False):
-    if not media_url:
-        return None
-
-    # استبعاد رابط الصورة الافتراضية المكسور إن وجد
-    if "8Z4v" in media_url:
-        return None
-
-    try:
-        resp = requests.get(media_url, timeout=15)
-        if resp.status_code == 200:
-            ext = 'mp4' if is_video else 'jpg'
-            mime = 'video/mp4' if is_video else 'image/jpeg'
-            files = {'file': (f'media.{ext}', resp.content, mime)}
-            upload_resp = requests.post('https://nostr.build/api/v2/upload/files', files=files, timeout=30)
-            if upload_resp.status_code == 200:
-                data = upload_resp.json()
-                if 'data' in data and len(data['data']) > 0:
-                    return data['data'][0]['url']
-    except Exception as e:
-        print(f"فشل الرفع لـ nostr.build: {e}")
-    
-    # في حال فشل الرفع لـ nostr.build، نستخدم رابط الصورة الأصلي للمقال المباشر
-    return media_url
 
 async def main():
     history = load_history()
@@ -169,27 +154,13 @@ async def main():
                 if not post_id or post_id in history:
                     continue
 
-                # استخراج وسائط الخبر
                 video_url, image_url = extract_media(entry, feed_url)
 
-                # تخطي الخبر فوراً إذا لم توجد صورة أو فيديو أصلي للمقال
                 if not video_url and not image_url:
                     print(f"تخطي الخبر بسبب عدم وجود صورة رئيسية: {entry.get('title', '')}")
                     continue
 
-                media_link = None
-                if video_url:
-                    if "youtube.com" in video_url or "youtu.be" in video_url:
-                        media_link = video_url
-                    else:
-                        media_link = upload_to_nostr_build(video_url, is_video=True)
-                elif image_url:
-                    media_link = upload_to_nostr_build(image_url, is_video=False)
-
-                # إذا لم يتم الحصول على رابط صورة صحيحة إطلاقاً، يتخطى الخبر
-                if not media_link:
-                    print(f"تخطي الخبر لعدم إمكانية معالجة الصورة: {entry.get('title', '')}")
-                    continue
+                media_link = video_url if video_url else image_url
 
                 title = clean_text(entry.get('title', ''))
                 summary = clean_text(entry.get('summary', ''))
