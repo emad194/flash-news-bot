@@ -2,7 +2,6 @@ import os
 import asyncio
 import requests
 from telethon import TelegramClient
-from telethon.tl.functions.messages import GetHistoryRequest
 from nostr_sdk import Keys, Client, EventBuilder, NostrSigner, RelayUrl
 
 # 1. قراءة المتغيرات وتفادي الأخطاء
@@ -57,7 +56,7 @@ def clean_text(text):
 async def main():
     history = load_history()
     
-    # إعداد Nostr
+    # 2. إعداد Nostr
     keys = Keys.parse(NOSTR_NSEC)
     signer = NostrSigner.keys(keys)
     client = Client(signer)
@@ -66,26 +65,15 @@ async def main():
     await client.add_relay(RelayUrl.parse("wss://nos.lol"))
     await client.connect()
 
-    # الاتصال بـ Telegram بالطريقة الصحيحة لـ Telethon
+    # 3. الاتصال بـ Telegram عبر البوت
     tg_client = TelegramClient('bot_session', API_ID, API_HASH)
     await tg_client.start(bot_token=BOT_TOKEN)
     
     async with tg_client:
         for channel in CHANNELS:
             try:
-                entity = await tg_client.get_entity(channel)
-                history_resp = await tg_client(GetHistoryRequest(
-                    peer=entity,
-                    limit=1,
-                    offset_date=None,
-                    offset_id=0,
-                    max_id=0,
-                    min_id=0,
-                    add_offset=0,
-                    hash=0
-                ))
-                
-                messages = history_resp.messages
+                # استخدام get_messages المباشرة المسموحة للبوتات
+                messages = await tg_client.get_messages(channel, limit=1)
                 if not messages:
                     continue
                 
@@ -93,6 +81,7 @@ async def main():
                 post_unique_id = f"{channel}_{msg.id}"
 
                 if post_unique_id in history:
+                    print(f"منشور سابق تم نشره مسبقاً من قناة {channel}، تخطي...")
                     continue
 
                 text = clean_text(msg.text or "")
