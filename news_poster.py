@@ -101,7 +101,7 @@ def extract_media(entry, feed_url):
             for img_tag in soup.find_all('img'):
                 src = img_tag.get('src') or (img_tag.get('srcset', '').split(',')[0].split(' ')[0] if img_tag.get('srcset') else None)
                 if src:
-                    bad_keywords = ['icon', 'avatar', 'logo', 'widget', 'banner', 'ad-', 'meme', 'social']
+                    bad_keywords = ['icon', 'avatar', 'logo', 'widget', 'banner', 'ad-', 'meme', 'social', '8Z4v']
                     if any(bad in src.lower() for bad in bad_keywords):
                         continue
                     image_url = urljoin(feed_url, src)
@@ -111,6 +111,10 @@ def extract_media(entry, feed_url):
 
 def upload_to_nostr_build(media_url, is_video=False):
     if not media_url:
+        return None
+
+    # استبعاد رابط الصورة الافتراضية المكسور إن وجد
+    if "8Z4v" in media_url:
         return None
 
     try:
@@ -127,7 +131,8 @@ def upload_to_nostr_build(media_url, is_video=False):
     except Exception as e:
         print(f"فشل الرفع لـ nostr.build: {e}")
     
-    return None
+    # في حال فشل الرفع لـ nostr.build، نستخدم رابط الصورة الأصلي للمقال المباشر
+    return media_url
 
 async def main():
     history = load_history()
@@ -167,7 +172,7 @@ async def main():
                 # استخراج وسائط الخبر
                 video_url, image_url = extract_media(entry, feed_url)
 
-                # الشرط الصارم: إذا لم تتوفر صورة أو فيديو للمقال، يتم تخطي الخبر فوراً إلى الخبر التالي
+                # تخطي الخبر فوراً إذا لم توجد صورة أو فيديو أصلي للمقال
                 if not video_url and not image_url:
                     print(f"تخطي الخبر بسبب عدم وجود صورة رئيسية: {entry.get('title', '')}")
                     continue
@@ -181,9 +186,9 @@ async def main():
                 elif image_url:
                     media_link = upload_to_nostr_build(image_url, is_video=False)
 
-                # إذا فشل الرفع لـ nostr.build ولم يتم الحصول على رابط صورة شغال، يتم التخطي أيضاً
+                # إذا لم يتم الحصول على رابط صورة صحيحة إطلاقاً، يتخطى الخبر
                 if not media_link:
-                    print(f"تخطي الخبر بسبب فشل رفع الصورة/الفيديو: {entry.get('title', '')}")
+                    print(f"تخطي الخبر لعدم إمكانية معالجة الصورة: {entry.get('title', '')}")
                     continue
 
                 title = clean_text(entry.get('title', ''))
