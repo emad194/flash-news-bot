@@ -2,8 +2,8 @@ name: News Publisher
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
-  workflow_dispatch:
+    - cron: '*/10 * * * *'  # تشغيل تلقائي كل 10 دقائق
+  workflow_dispatch:        # يتيح التشغيل اليدوي أيضاً
 
 jobs:
   publish:
@@ -24,7 +24,7 @@ jobs:
           pip install nostr-sdk requests feedparser beautifulsoup4
 
       - name: Restore Published History
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: published_posts.txt
           key: published-posts-${{ github.run_id }}
