@@ -2,8 +2,8 @@ name: News Publisher
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # تشغيل كل 15 دقيقة
-  workflow_dispatch: # لإمكانية التشغيل اليدوي
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -21,7 +21,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install nostr-sdk requests feedparser
+          pip install nostr-sdk requests feedparser beautifulsoup4
 
       - name: Restore Published History
         uses: actions/cache@v3
