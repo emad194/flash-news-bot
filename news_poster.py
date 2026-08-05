@@ -13,7 +13,7 @@ NOSTR_NSEC = os.environ.get("NOSTR_NSEC", "").strip()
 if not NOSTR_NSEC:
     raise ValueError("متغير NOSTR_NSEC مفقود في GitHub Secrets")
 
-# رابط صورة افتراضية مباشر وموثوق (يمكنك استبداله برابط لوجو قناتك)
+# رابط صورة افتراضية مباشر وموثوق
 DEFAULT_IMAGE_URL = "https://i.nostr.build/8Z4v.jpg"
 
 # --- إعدادات معدل النشر ---
@@ -72,6 +72,7 @@ def extract_media(entry, feed_url):
     video_url = None
     image_url = None
 
+    # 1. فحص Enclosures الرسمية
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             mime_type = enc.get('type', '')
@@ -82,11 +83,13 @@ def extract_media(entry, feed_url):
             elif mime_type.startswith('image/'):
                 image_url = href
 
+    # 2. فحص Media RSS (المتبع لدى وكالات الأخبار الرسمية)
     if not image_url and 'media_content' in entry and len(entry.media_content) > 0:
         image_url = entry.media_content[0].get('url')
     elif not image_url and 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
         image_url = entry.media_thumbnail[0].get('url')
 
+    # 3. فحص الـ HTML مع تصفية الأيقونات والإعلانات وصور الميمز الجانبية
     if not image_url and not video_url:
         html_sources = []
         if 'summary' in entry:
@@ -98,21 +101,24 @@ def extract_media(entry, feed_url):
         full_html = " ".join(html_sources)
         if full_html:
             soup = BeautifulSoup(full_html, 'html.parser')
-            img_tag = soup.find('img')
-            if img_tag:
-                raw_img = img_tag.get('src')
-                if not raw_img and img_tag.get('srcset'):
-                    raw_img = img_tag['srcset'].split(',')[0].split(' ')[0]
-                if raw_img:
-                    image_url = urljoin(feed_url, raw_img)
+            for img_tag in soup.find_all('img'):
+                src = img_tag.get('src') or (img_tag.get('srcset', '').split(',')[0].split(' ')[0] if img_tag.get('srcset') else None)
+                if src:
+                    # تصفية الكلمات الدلالية للصور غير المرغوبة (أيقونات، إعلانات، صور عشوائية)
+                    bad_keywords = ['icon', 'avatar', 'logo', 'widget', 'banner', 'ad-', 'meme', 'social']
+                    if any(bad in src.lower() for bad in bad_keywords):
+                        continue
+                    image_url = urljoin(feed_url, src)
+                    break
 
+    # 4. إذا لم يجد صورة مناسبة، نستخدم الصورة الافتراضية
     if not image_url and not video_url:
         image_url = DEFAULT_IMAGE_URL
 
     return video_url, image_url
 
 def upload_to_nostr_build(media_url, is_video=False):
-    # إذا كانت الصورة هي الصورة الافتراضية، يرجع الرابط فوراً بدون إعادة رفع
+    # إذا كانت الصورة هي الصورة الافتراضية، يرجع الرابط مباشرة
     if media_url == DEFAULT_IMAGE_URL:
         return DEFAULT_IMAGE_URL
 
@@ -130,7 +136,6 @@ def upload_to_nostr_build(media_url, is_video=False):
     except Exception as e:
         print(f"فشل الرفع لـ nostr.build: {e}")
     
-    # في حال وجود خطأ في الرابط الأصلي، يتم التبديل للصورة الافتراضية لمنع ظهور 404
     return DEFAULT_IMAGE_URL
 
 async def main():
@@ -147,7 +152,7 @@ async def main():
 
     published_count = 0
 
-    # خلط ترتيب المصادر عشوائياً في كل مرة لتنويع المنشورات
+    # خلط المصادر عشوائياً في كل دورة
     feeds = RSS_FEEDS.copy()
     random.shuffle(feeds)
 
