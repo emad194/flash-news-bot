@@ -1,10 +1,12 @@
 import os
 import re
 import asyncio
+import uuid
 import requests
 from bs4 import BeautifulSoup
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.types import MessageMediaWebPage, MessageEntityTextUrl, MessageEntityUrl
 from nostr_sdk import Keys, Client, EventBuilder, NostrSigner, RelayUrl
 
 # 1. قراءة المتغيرات وتفادي الأخطاء
@@ -45,58 +47,90 @@ def save_history(post_id):
     with open(HISTORY_FILE, "a") as f:
         f.write(f"{post_id}\n")
 
+def extract_urls(msg):
+    """استخراج جميع الروابط سواء كانت نصوصاً مجردة، روابط مدمجة، أو معاينة صفحة."""
+    urls = []
+    text = msg.text or ""
+    
+    # 1. استخراج الروابط المباشرة بالنص
+    found_urls = re.findall(r'https?://[^\s\)]+', text)
+    urls.extend(found_urls)
+    
+    # 2. استخراج الروابط المدمجة في الـ Entities
+    if msg.entities:
+        for entity in msg.entities:
+            if isinstance(entity, MessageEntityTextUrl):
+                urls.append(entity.url)
+            elif isinstance(entity, MessageEntityUrl):
+                offset = entity.offset
+                length = entity.length
+                urls.append(text[offset:offset+length])
+                
+    # 3. استخراج الرابط من معاينات تليجرام WebPage
+    if msg.media and isinstance(msg.media, MessageMediaWebPage) and hasattr(msg.media.webpage, 'url'):
+        urls.append(msg.media.webpage.url)
+
+    # إزالة التكرار مع الحفاظ على الترتيب
+    seen = set()
+    unique_urls = []
+    for u in urls:
+        clean_u = u.strip("()[]\"'")
+        if clean_u not in seen:
+            seen.add(clean_u)
+            unique_urls.append(clean_u)
+            
+    return unique_urls
+
 def clean_and_format_text(text):
     if not text:
-        return "", []
+        return ""
     
-    # 1. استخراج الروابط قبل حذفها لجلب الصور منها
-    urls = re.findall(r'https?://[^\s\)]+', text)
+    # 1. إصلاحMarkdown المشوه: [**Title**](url) -> Title
+    cleaned = re.sub(r'\[(.*?)\]\((https?://[^\)]+)\)', r'\1', text)
     
-    # 2. تنظيف Markdown المشوه مثل [**Title**](url) وحذف الرابط
-    def remove_md_link(match):
-        return match.group(1).replace("**", "").replace("[", "").replace("]", "").strip()
-    
-    cleaned = re.sub(r'\[(.*?)\]\((https?://[^\)]+)\)', remove_md_link, text)
-    
-    # 3. تنظيف النجوم والأقواس الزائدة
+    # 2. إزالة النجوم والرموز التنسيقية الزائدة
     cleaned = cleaned.replace("**", "").replace("[", "").replace("]", "")
     
-    # 4. إزالة روابط المصدر والإعلانات وروابط تليجرام
+    # 3. إزالة السطور المزعجة (إعلانات، روابط تليجرام، توقيع القناة، والمصادر المباشرة)
     lines = cleaned.split("\n")
     filtered_lines = []
     for line in lines:
         line_str = line.strip()
-        # حذف السطور التي تحتوي على روابط أو ترويج أو كلمة Source
+        if not line_str:
+            continue
+        
+        lower_line = line_str.lower()
         if (
-            "t.me/" in line_str.lower()
-            or "http://" in line_str.lower()
-            or "https://" in line_str.lower()
-            or line_str.lower().startswith("source:")
-            or "subscribe" in line_str.lower()
-            or "join" in line_str.lower()
+            "t.me/" in lower_line
+            or lower_line.startswith("http://")
+            or lower_line.startswith("https://")
+            or lower_line.startswith("source:")
+            or "subscribe" in lower_line
+            or "join" in lower_line
             or line_str.startswith("@")
         ):
             continue
+            
         filtered_lines.append(line_str)
         
-    return "\n".join(filtered_lines).strip(), urls
+    return "\n\n".join(filtered_lines).strip()
 
 def get_og_image(url):
-    """جلب صورة المعاينة الأصلية للمقال من الرابط"""
+    """جلب صورة المعاينة من رابط الخبر عبر وسم og:image"""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        resp = requests.get(url, headers=headers, timeout=5)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        resp = requests.get(url, headers=headers, timeout=6)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             og_image = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'og:image'})
             if og_image and og_image.get('content'):
                 img_url = og_image['content']
-                img_resp = requests.get(img_url, headers=headers, timeout=5)
+                img_resp = requests.get(img_url, headers=headers, timeout=6)
                 if img_resp.status_code == 200:
-                    temp_path = "temp_og.jpg"
-                    with open(temp_path, "wb") as f:
+                    temp_filename = f"temp_og_{uuid.uuid4().hex[:8]}.jpg"
+                    with open(temp_filename, "wb") as f:
                         f.write(img_resp.content)
-                    return temp_path
+                    return temp_filename
     except Exception as e:
         print(f"تعذر جلب الصورة من {url}: {e}")
     return None
@@ -104,9 +138,11 @@ def get_og_image(url):
 def upload_to_nostr_build(file_path):
     try:
         with open(file_path, 'rb') as f:
-            resp = requests.post('https://nostr.build/api/v2/upload/files', files={'file': f})
+            resp = requests.post('https://nostr.build/api/v2/upload/files', files={'file': f}, timeout=15)
             if resp.status_code == 200:
-                return resp.json()['data'][0]['url']
+                data = resp.json()
+                if 'data' in data and len(data['data']) > 0:
+                    return data['data'][0]['url']
     except Exception as e:
         print(f"فشل الرفع إلى nostr.build: {e}")
     return None
@@ -139,25 +175,28 @@ async def main():
                     continue
 
                 raw_text = msg.text or ""
-                text, urls = clean_and_format_text(raw_text)
+                urls = extract_urls(msg)
+                text = clean_and_format_text(raw_text)
                 media_url = None
                 
-                # 1. جلب الميديا المرفقة بالتليجرام إن وجدت
-                if msg.media and not hasattr(msg.media, 'webpage'):
+                # 1. إذا كان المنشور يحوي صورة أو فيديو مرفق في تليجرام مباشرة
+                if msg.media and not isinstance(msg.media, MessageMediaWebPage):
                     file_path = await tg_client.download_media(msg)
                     if file_path and os.path.exists(file_path):
                         media_url = upload_to_nostr_build(file_path)
                         os.remove(file_path)
 
-                # 2. إن لم توجد ميديا، جلب صورة المعاينة من أول رابط في النص
+                # 2. إن لم تكن هناك ميديا مرفقة وحصلنا على روابط، نجلب صورة og:image
                 if not media_url and urls:
-                    og_path = get_og_image(urls[0])
-                    if og_path:
-                        media_url = upload_to_nostr_build(og_path)
-                        if os.path.exists(og_path):
-                            os.remove(og_path)
+                    for target_url in urls:
+                        og_path = get_og_image(target_url)
+                        if og_path:
+                            media_url = upload_to_nostr_build(og_path)
+                            if os.path.exists(og_path):
+                                os.remove(og_path)
+                            break
 
-                # 3. تجميع المنشور بدون أي روابط نصية داخل الخبر
+                # 3. بناء نص المنشور النهائي
                 full_content = text
                 if media_url:
                     full_content = f"{full_content}\n\n{media_url}".strip()
@@ -165,11 +204,11 @@ async def main():
                 if full_content.strip():
                     builder = EventBuilder.text_note(full_content)
                     await client.send_event_builder(builder)
-                    print(f"تم نشر خبر نظيف ومصوّر بنجاح من قناة: {channel}")
+                    print(f"تم بنجاح نشر خبر أنيق ومصوّر من قناة: {channel}")
                     save_history(post_unique_id)
 
             except Exception as e:
-                print(f"خطأ في قناة {channel}: {e}")
+                print(f"خطأ أثناء معالجة القناة {channel}: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
