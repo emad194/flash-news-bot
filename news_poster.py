@@ -5,14 +5,20 @@ from telethon import TelegramClient
 from telethon.tl.functions.messages import GetHistoryRequest
 from nostr_sdk import Keys, Client, EventBuilder, NostrSigner, RelayUrl
 
-# 1. قراءة المتغيرات وتفادي خطأ ValueError في حال كانت فارغة
+# 1. قراءة المتغيرات وتفادي الأخطاء
 api_id_env = os.environ.get("TELEGRAM_API_ID", "").strip()
 api_hash_env = os.environ.get("TELEGRAM_API_HASH", "").strip()
 bot_token_env = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 nostr_nsec_env = os.environ.get("NOSTR_NSEC", "").strip()
 
-if not api_id_env or not api_hash_env or not bot_token_env or not nostr_nsec_env:
-    raise ValueError("إحدى المتغيرات البيئية (Secrets) مفقودة أو فارغة! تحقق من إعدادات GitHub Secrets.")
+missing = []
+if not api_id_env: missing.append("TELEGRAM_API_ID")
+if not api_hash_env: missing.append("TELEGRAM_API_HASH")
+if not bot_token_env: missing.append("TELEGRAM_BOT_TOKEN")
+if not nostr_nsec_env: missing.append("NOSTR_NSEC")
+
+if missing:
+    raise ValueError(f"المتغيرات التالية مفقودة في GitHub Secrets: {', '.join(missing)}")
 
 API_ID = int(api_id_env)
 API_HASH = api_hash_env
@@ -60,11 +66,13 @@ async def main():
     await client.add_relay(RelayUrl.parse("wss://nos.lol"))
     await client.connect()
 
-    # الاتصال بـ Telegram باستخدام Bot Token
-    async with TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN) as tg_client:
+    # الاتصال بـ Telegram بالطريقة الصحيحة لـ Telethon
+    tg_client = TelegramClient('bot_session', API_ID, API_HASH)
+    await tg_client.start(bot_token=BOT_TOKEN)
+    
+    async with tg_client:
         for channel in CHANNELS:
             try:
-                # جلب الكيان الخاص بالقناة أولاً لضمان عدم رفض الوصول عبر البوت
                 entity = await tg_client.get_entity(channel)
                 history_resp = await tg_client(GetHistoryRequest(
                     peer=entity,
