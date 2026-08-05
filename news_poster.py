@@ -4,6 +4,7 @@ import feedparser
 import requests
 import re
 import html
+import random
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from nostr_sdk import Keys, Client, EventBuilder, NostrSigner, RelayUrl
@@ -12,17 +13,36 @@ NOSTR_NSEC = os.environ.get("NOSTR_NSEC", "").strip()
 if not NOSTR_NSEC:
     raise ValueError("متغير NOSTR_NSEC مفقود في GitHub Secrets")
 
-# رابط صورة افتراضية (ضع رابط لوجو حسابك هنا ليتم استخدامه عند عدم وجود صورة بالخبر)
 DEFAULT_IMAGE_URL = "https://nostr.build/i/nostr_build_6443c2d4fa.jpg"
 
+# --- إعدادات معدل النشر ---
+MAX_POSTS_PER_RUN = 2       # عدد المنشورات الأقصى في الدورة الواحدة (كل 15 دقيقة)
+SLEEP_BETWEEN_POSTS = 90    # الانتظار بالثواني بين كل منشور والآخر
+
+# --- قائمة المصادر الشاملة ---
 RSS_FEEDS = [
+    # --- Crypto & Bitcoin ---
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
-    "https://techcrunch.com/feed/",
     "https://cointelegraph.com/rss",
+    "https://bitcoinmagazine.com/.rss/full/",
+    "https://decrypt.co/feed",
+    "https://blockworks.co/feed",
+    
+    # --- Nostr & Bitcoin News ---
+    "https://nostr.band/rss/news.xml",
+    
+    # --- Tech & Innovation ---
+    "https://techcrunch.com/feed/",
     "https://www.theverge.com/rss/index.xml",
+    "https://feeds.arstechnica.com/arstechnica/index",
+    "https://www.wired.com/feed/category/business/latest/rss",
+    
+    # --- World Politics & Global Finance ---
     "https://feeds.feedburner.com/reuters/topNews",
     "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best",
     "https://feeds.bloomberg.com/economics/news.rss",
+    "http://feeds.bbci.co.uk/news/world/rss.xml",
+    "https://search.cnbc.com/rs/search/combineddigest.ca?headline=plaintext&selectedNodeId=100003114&minProcessedTime=0&maxProcessedTime=endofday&cd=100"
 ]
 
 HISTORY_FILE = "published_posts.txt"
@@ -40,15 +60,10 @@ def save_history(post_id):
 def clean_text(raw_text):
     if not raw_text:
         return ""
-    # 1. فك تشفير رموز HTML مثل &#8230; و &amp;
     text = html.unescape(raw_text)
-    # 2. إزالة وسوم الـ HTML
     text = re.sub(r'<[^>]+>', '', text)
-    # 3. إزالة النجوم والرموز الغريبة
     text = text.replace('*', '')
-    # 4. إزالة روابط المراجع المضلعة مثل [bfi.org] أو [&#8230;]
     text = re.sub(r'\[.*?\]', '', text)
-    # 5. تنظيف المساحات الزائدة
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -56,7 +71,6 @@ def extract_media(entry, feed_url):
     video_url = None
     image_url = None
 
-    # 1. فحص Enclosures
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             mime_type = enc.get('type', '')
@@ -67,13 +81,11 @@ def extract_media(entry, feed_url):
             elif mime_type.startswith('image/'):
                 image_url = href
 
-    # 2. فحص Media RSS
     if not image_url and 'media_content' in entry and len(entry.media_content) > 0:
         image_url = entry.media_content[0].get('url')
     elif not image_url and 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
         image_url = entry.media_thumbnail[0].get('url')
 
-    # 3. البحث العميق داخل كود الـ HTML للمقال
     if not image_url and not video_url:
         html_sources = []
         if 'summary' in entry:
@@ -91,10 +103,8 @@ def extract_media(entry, feed_url):
                 if not raw_img and img_tag.get('srcset'):
                     raw_img = img_tag['srcset'].split(',')[0].split(' ')[0]
                 if raw_img:
-                    # تحويل الرابط النسبي إلى رابط كامل
                     image_url = urljoin(feed_url, raw_img)
 
-    # 4. استخدام الصورة الافتراضية إذا لم تجد أي صورة/فيديو
     if not image_url and not video_url:
         image_url = DEFAULT_IMAGE_URL
 
@@ -128,18 +138,30 @@ async def main():
     await client.add_relay(RelayUrl.parse("wss://relay.primal.net"))
     await client.connect()
 
-    for feed_url in RSS_FEEDS:
+    published_count = 0
+
+    # خلط ترتيب المصادر عشوائياً في كل مرة لتنويع المنشورات
+    feeds = RSS_FEEDS.copy()
+    random.shuffle(feeds)
+
+    for feed_url in feeds:
+        if published_count >= MAX_POSTS_PER_RUN:
+            print("تم الوصول للحد الأقصى للمنشورات لهذه الدورة.")
+            break
+
         try:
             feed = feedparser.parse(feed_url)
             if not feed.entries:
                 continue
 
             for entry in feed.entries[:2]:
+                if published_count >= MAX_POSTS_PER_RUN:
+                    break
+
                 post_id = entry.get('id') or entry.get('link')
                 if not post_id or post_id in history:
                     continue
 
-                # تنظيف النصوص
                 title = clean_text(entry.get('title', ''))
                 summary = clean_text(entry.get('summary', ''))
 
@@ -162,6 +184,11 @@ async def main():
                 await client.send_event_builder(builder)
                 print(f"تم بنجاح نشر: {title}")
                 save_history(post_id)
+                published_count += 1
+
+                if published_count < MAX_POSTS_PER_RUN:
+                    print(f"الانتظار لمدة {SLEEP_BETWEEN_POSTS} ثانية قبل الخبر التالي...")
+                    await asyncio.sleep(SLEEP_BETWEEN_POSTS)
 
         except Exception as e:
             print(f"خطأ في تغذية {feed_url}: {e}")
