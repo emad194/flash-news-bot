@@ -2,8 +2,8 @@ name: News Publisher
 
 on:
   schedule:
-    - cron: '*/20 * * * *'  # يعمل كل 20 دقيقة تلقائياً
-  workflow_dispatch:      # يتيح التشغيل اليدوي المباشر
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -33,5 +33,6 @@ jobs:
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           NOSTR_NSEC: ${{ secrets.NOSTR_NSEC }}
         run: python news_poster.py
