@@ -1,7 +1,6 @@
 import os
 import asyncio
 import feedparser
-import requests
 import re
 import html
 import random
@@ -13,34 +12,34 @@ NOSTR_NSEC = os.environ.get("NOSTR_NSEC", "").strip()
 if not NOSTR_NSEC:
     raise ValueError("متغير NOSTR_NSEC مفقود في GitHub Secrets")
 
-# --- إعدادات معدل النشر ---
-MAX_POSTS_PER_RUN = 2        # عدد المنشورات الأقصى في الدورة الواحدة (كل 15 دقيقة)
-SLEEP_BETWEEN_POSTS = 90     # الانتظار بالثواني بين كل منشور والآخر
+# --- إعدادات معدل وتوقيت النشر ---
+MAX_POSTS_PER_RUN = 2        # عدد المنشورات في التشغيلة الواحدة
+SLEEP_BETWEEN_POSTS = 180    # الفارق الزمني بالثواني بين الخبر والآخر (3 دقائق)
 
-# --- قائمة المصادر الشاملة ---
+# --- قائمة المصادر الموجهة حصراً لمجتمع Nostr ---
 RSS_FEEDS = [
-    # --- Crypto & Bitcoin ---
+    # Bitcoin & Crypto Core
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://cointelegraph.com/rss",
     "https://bitcoinmagazine.com/.rss/full/",
     "https://decrypt.co/feed",
     "https://blockworks.co/feed",
     
-    # --- Nostr & Bitcoin News ---
+    # Nostr & Freedom Tech
     "https://nostr.band/rss/news.xml",
     
-    # --- Tech & Innovation ---
+    # Tech, AI & Markets
     "https://techcrunch.com/feed/",
     "https://www.theverge.com/rss/index.xml",
     "https://feeds.arstechnica.com/arstechnica/index",
-    "https://www.wired.com/feed/category/business/latest/rss",
-    
-    # --- World Politics & Global Finance ---
-    "https://feeds.feedburner.com/reuters/topNews",
-    "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best",
-    "https://feeds.bloomberg.com/economics/news.rss",
-    "http://feeds.bbci.co.uk/news/world/rss.xml",
-    "https://search.cnbc.com/rs/search/combineddigest.ca?headline=plaintext&selectedNodeId=100003114&minProcessedTime=0&maxProcessedTime=endofday&cd=100"
+    "https://feeds.feedburner.com/reuters/topNews"
+]
+
+# قائمة الكلمات المفتاحية المطلوبة لجلب Zaps واهتمام المتابعين
+TARGET_KEYWORDS = [
+    'bitcoin', 'btc', 'crypto', 'nostr', 'lightning', 'ai', 'openai', 'claude',
+    'eth', 'ethereum', 'sec', 'fed', 'inflation', 'fed', 'market', 'privacy',
+    'security', 'hack', 'trump', 'tariff', 'tech', 'gpu', 'nvidia', 'apple', 'google'
 ]
 
 HISTORY_FILE = "published_posts.txt"
@@ -65,11 +64,14 @@ def clean_text(raw_text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
+def is_nostr_relevant(text):
+    text_lower = text.lower()
+    return any(keyword in text_lower for keyword in TARGET_KEYWORDS)
+
 def extract_media(entry, feed_url):
     video_url = None
     image_url = None
 
-    # 1. فحص Enclosures الرسمية
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             mime_type = enc.get('type', '')
@@ -80,11 +82,9 @@ def extract_media(entry, feed_url):
             elif mime_type.startswith('image/'):
                 image_url = href
 
-    # 2. فحص Media Content أولاً بدلاً من المصغرات لجلب الدقة العالية
     if not image_url and 'media_content' in entry and len(entry.media_content) > 0:
         image_url = entry.media_content[0].get('url')
 
-    # 3. فحص الـ HTML وجلب أعلى دقة متوفرة من srcset أو src
     if not image_url and not video_url:
         html_sources = []
         if 'content' in entry:
@@ -97,11 +97,9 @@ def extract_media(entry, feed_url):
         if full_html:
             soup = BeautifulSoup(full_html, 'html.parser')
             for img_tag in soup.find_all('img'):
-                # استخدام أحدث/أعلى دقة من srcset إن وجد
                 src = None
                 if img_tag.get('srcset'):
                     srcset_parts = img_tag['srcset'].split(',')
-                    # اختيار الصورة الأخيرة في القائمة لأنها تكون بأعلى دقة عادةً
                     src = srcset_parts[-1].strip().split(' ')[0]
                 if not src:
                     src = img_tag.get('src')
@@ -113,7 +111,6 @@ def extract_media(entry, feed_url):
                     image_url = urljoin(feed_url, src)
                     break
 
-    # 4. التفكير بالصورة المصغرة فقط كخيار أخير إذا لم تتوفر دقة عالية
     if not image_url and not video_url and 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
         image_url = entry.media_thumbnail[0].get('url')
 
@@ -154,22 +151,29 @@ async def main():
                 if not post_id or post_id in history:
                     continue
 
+                title = clean_text(entry.get('title', ''))
+                summary = clean_text(entry.get('summary', ''))
+                full_text_check = f"{title} {summary}"
+
+                # تصفية الأخبار: تخطي المقالات التي لا تهم جمهور Nostr
+                if not is_nostr_relevant(full_text_check):
+                    print(f"تخطي خبر غير ذي صلة باهتمامات Nostr: {title}")
+                    continue
+
                 video_url, image_url = extract_media(entry, feed_url)
 
+                # تخطي الخبر إذا لم توجد صورة رئيسية عالية الجودة
                 if not video_url and not image_url:
-                    print(f"تخطي الخبر بسبب عدم وجود صورة رئيسية: {entry.get('title', '')}")
+                    print(f"تخطي الخبر لعدم وجود صورة: {title}")
                     continue
 
                 media_link = video_url if video_url else image_url
-
-                title = clean_text(entry.get('title', ''))
-                summary = clean_text(entry.get('summary', ''))
 
                 post_text = f"{title}\n\n{summary}\n\n{media_link}"
 
                 builder = EventBuilder.text_note(post_text)
                 await client.send_event_builder(builder)
-                print(f"تم بنجاح نشر: {title}")
+                print(f"تم بنجاح نشر خبر مستهدف: {title}")
                 save_history(post_id)
                 published_count += 1
 
