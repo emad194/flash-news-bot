@@ -13,10 +13,10 @@ if not NOSTR_NSEC:
     raise ValueError("متغير NOSTR_NSEC مفقود في GitHub Secrets")
 
 # --- إعدادات معدل وتوقيت النشر ---
-MAX_POSTS_PER_RUN = 2        # عدد المنشورات في التشغيلة الواحدة
-SLEEP_BETWEEN_POSTS = 180    # الفارق الزمني بالثواني بين الخبر والآخر (3 دقائق)
+MAX_POSTS_PER_RUN = 6        # نشر 6 مقالات في الدورة الواحدة
+SLEEP_BETWEEN_POSTS = 30     # الانتظار 30 ثانية بين كل خبر لتجنب الحظر
 
-# --- قائمة المصادر الموجهة حصراً لمجتمع Nostr ---
+# --- قائمة المصادر الموجهة حصراً لمجتمع Nostr و Bitcoin ---
 RSS_FEEDS = [
     # Bitcoin & Crypto Core
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
@@ -28,18 +28,21 @@ RSS_FEEDS = [
     # Nostr & Freedom Tech
     "https://nostr.band/rss/news.xml",
     
-    # Tech, AI & Markets
-    "https://techcrunch.com/feed/",
-    "https://www.theverge.com/rss/index.xml",
-    "https://feeds.arstechnica.com/arstechnica/index",
-    "https://feeds.feedburner.com/reuters/topNews"
+    # AI & Tech Hardware
+    "https://techcrunch.com/feed/"
 ]
 
-# قائمة الكلمات المفتاحية المطلوبة لجلب Zaps واهتمام المتابعين
+# كلمات مفتاحية إيجابية
 TARGET_KEYWORDS = [
-    'bitcoin', 'btc', 'crypto', 'nostr', 'lightning', 'ai', 'openai', 'claude',
-    'eth', 'ethereum', 'sec', 'fed', 'inflation', 'fed', 'market', 'privacy',
-    'security', 'hack', 'trump', 'tariff', 'tech', 'gpu', 'nvidia', 'apple', 'google'
+    'bitcoin', 'btc', 'crypto', 'nostr', 'lightning', 'sats', 'ai', 'openai', 
+    'claude', 'sec', 'fed', 'inflation', 'market', 'privacy', 'security', 
+    'hack', 'nvidia', 'gpu', 'apple', 'google', 'trump'
+]
+
+# كلمات محظورة تستبعد المقالات الأدبية والتاريخية
+EXCLUDE_KEYWORDS = [
+    'etymology', 'fiction', 'novel', 'poem', 'essay', 'bradbury', 'review:', 
+    'movie', 'culture', 'book', 'history', 'ancient'
 ]
 
 HISTORY_FILE = "published_posts.txt"
@@ -66,6 +69,12 @@ def clean_text(raw_text):
 
 def is_nostr_relevant(text):
     text_lower = text.lower()
+    
+    # فحص الكلمات المحظورة أولاً
+    if any(bad_word in text_lower for bad_word in EXCLUDE_KEYWORDS):
+        return False
+        
+    # فحص الكلمات المستهدفة
     return any(keyword in text_lower for keyword in TARGET_KEYWORDS)
 
 def extract_media(entry, feed_url):
@@ -105,7 +114,7 @@ def extract_media(entry, feed_url):
                     src = img_tag.get('src')
                 
                 if src:
-                    bad_keywords = ['icon', 'avatar', 'logo', 'widget', 'banner', 'ad-', 'meme', 'social', '8Z4v']
+                    bad_keywords = ['icon', 'avatar', 'logo', 'widget', 'banner', 'ad-', 'meme', 'social', '8Z4v', 'illustration', 'graphic']
                     if any(bad in src.lower() for bad in bad_keywords):
                         continue
                     image_url = urljoin(feed_url, src)
@@ -129,13 +138,12 @@ async def main():
     await client.connect()
 
     published_count = 0
-
     feeds = RSS_FEEDS.copy()
     random.shuffle(feeds)
 
     for feed_url in feeds:
         if published_count >= MAX_POSTS_PER_RUN:
-            print("تم الوصول للحد الأقصى للمنشورات لهذه الدورة.")
+            print("تم الوصول للحد الأقصى المطلوب لهذه الدورة (6 منشورات).")
             break
 
         try:
@@ -155,30 +163,28 @@ async def main():
                 summary = clean_text(entry.get('summary', ''))
                 full_text_check = f"{title} {summary}"
 
-                # تصفية الأخبار: تخطي المقالات التي لا تهم جمهور Nostr
                 if not is_nostr_relevant(full_text_check):
-                    print(f"تخطي خبر غير ذي صلة باهتمامات Nostr: {title}")
+                    print(f"تخطي خبر غير ذي صلة: {title}")
                     continue
 
                 video_url, image_url = extract_media(entry, feed_url)
 
-                # تخطي الخبر إذا لم توجد صورة رئيسية عالية الجودة
                 if not video_url and not image_url:
                     print(f"تخطي الخبر لعدم وجود صورة: {title}")
                     continue
 
                 media_link = video_url if video_url else image_url
-
                 post_text = f"{title}\n\n{summary}\n\n{media_link}"
 
                 builder = EventBuilder.text_note(post_text)
                 await client.send_event_builder(builder)
-                print(f"تم بنجاح نشر خبر مستهدف: {title}")
+                print(f"({published_count + 1}/{MAX_POSTS_PER_RUN}) تم نشر خبر مستهدف: {title}")
                 save_history(post_id)
                 published_count += 1
 
+                # انتظار 30 ثانية قبل نشر الخبر التالي في نفس الدورة
                 if published_count < MAX_POSTS_PER_RUN:
-                    print(f"الانتظار لمدة {SLEEP_BETWEEN_POSTS} ثانية قبل الخبر التالي...")
+                    print(f"الانتظار لمدة {SLEEP_BETWEEN_POSTS} ثانية قبل نشر الخبر التالي...")
                     await asyncio.sleep(SLEEP_BETWEEN_POSTS)
 
         except Exception as e:
