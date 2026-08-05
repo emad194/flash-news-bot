@@ -3,17 +3,22 @@ import asyncio
 import feedparser
 import requests
 import re
+from bs4 import BeautifulSoup
 from nostr_sdk import Keys, Client, EventBuilder, NostrSigner, RelayUrl
 
 NOSTR_NSEC = os.environ.get("NOSTR_NSEC", "").strip()
 if not NOSTR_NSEC:
     raise ValueError("متغير NOSTR_NSEC مفقود في GitHub Secrets")
 
-# مصادر أخبار توفر فيديوهات وصور دقيقة
+# قائمة مصادر الأخبار المتنوعة شاملة The Verge, Reuters, Bloomberg
 RSS_FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://techcrunch.com/feed/",
     "https://cointelegraph.com/rss",
+    "https://www.theverge.com/rss/index.xml",
+    "https://feeds.feedburner.com/reuters/topNews",
+    "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best",
+    "https://feeds.bloomberg.com/economics/news.rss",
 ]
 
 HISTORY_FILE = "published_posts.txt"
@@ -29,11 +34,10 @@ def save_history(post_id):
         f.write(f"{post_id}\n")
 
 def extract_media(entry):
-    """استخراج رابط الفيديو أو الصورة من تغذية RSS"""
     video_url = None
     image_url = None
 
-    # 1. البحث في Enclosures (غالبًا تحتوي على ملفات الميديا المباشرة كالـ mp4)
+    # 1. فحص ملفات الميديا المدمجة (Enclosures)
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             mime_type = enc.get('type', '')
@@ -44,24 +48,24 @@ def extract_media(entry):
             elif mime_type.startswith('image/'):
                 image_url = href
 
-    # 2. البحث عن روابط YouTube المدمجة في الوصف/المقال
-    if not video_url:
-        content_text = entry.get('summary', '') + entry.get('description', '')
-        yt_match = re.search(r'(https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[^\s"<]+)', content_text)
-        if yt_match:
-            video_url = yt_match.group(1)
+    # 2. فحص الوسائط الخاصة بـ Media RSS (تستخدمها Reuters و Bloomberg بكثرة)
+    if not image_url and 'media_content' in entry and len(entry.media_content) > 0:
+        image_url = entry.media_content[0].get('url')
+    elif not image_url and 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
+        image_url = entry.media_thumbnail[0].get('url')
 
-    # 3. إذا لم يوجد فيديو، نأخذ الصورة من media_content
-    if not video_url and not image_url:
-        if 'media_content' in entry and len(entry.media_content) > 0:
-            image_url = entry.media_content[0].get('url')
-        elif 'media_thumbnail' in entry and len(entry.media_thumbnail) > 0:
-            image_url = entry.media_thumbnail[0].get('url')
+    # 3. كشط وسوم <img> من محتوى HTML الخاص بمقالات The Verge و Reuters
+    if not image_url and not video_url:
+        content_html = entry.get('summary', '') + entry.get('content', [{}])[0].get('value', '')
+        if content_html:
+            soup = BeautifulSoup(content_html, 'html.parser')
+            img_tag = soup.find('img')
+            if img_tag and img_tag.get('src'):
+                image_url = img_tag['src']
 
     return video_url, image_url
 
 def upload_to_nostr_build(media_url, is_video=False):
-    """رفع الميديا (صور أو فيديوهات قصيرة) إلى nostr.build"""
     try:
         resp = requests.get(media_url, timeout=15)
         if resp.status_code == 200:
@@ -74,8 +78,8 @@ def upload_to_nostr_build(media_url, is_video=False):
                 if 'data' in data and len(data['data']) > 0:
                     return data['data'][0]['url']
     except Exception as e:
-        print(f"فشل رفع الميديا لـ nostr.build: {e}")
-    return media_url  # استخدام الرابط الأصلي في حال فشل الرفع
+        print(f"فشل الرفع لـ nostr.build: {e}")
+    return media_url
 
 async def main():
     history = load_history()
@@ -95,22 +99,23 @@ async def main():
             if not feed.entries:
                 continue
 
-            for entry in feed.entries[:3]:
+            # معالجة أول خبرين من كل مصدر لتنوع التغذية
+            for entry in feed.entries[:2]:
                 post_id = entry.get('id') or entry.get('link')
                 if not post_id or post_id in history:
                     continue
 
-                title = entry.get('title', '').strip()
-                summary = entry.get('summary', '').strip()
+                # تنظيف وتنسيق العنوان
+                title = entry.get('title', '').strip().replace('*', '')
+                summary_raw = entry.get('summary', '').strip()
                 
-                # تنظيف الـ HTML
-                summary = re.sub(r'<[^>]+>', '', summary).strip()
+                # إزالة أي وسوم HTML زائدة
+                summary = re.sub(r'<[^>]+>', '', summary_raw).strip()
 
                 video_url, image_url = extract_media(entry)
                 media_link = None
 
                 if video_url:
-                    # إذا كان فيديو YouTube يوضع كما هو وتطبيقات Nostr تشغله فوراً
                     if "youtube.com" in video_url or "youtu.be" in video_url:
                         media_link = video_url
                     else:
@@ -118,18 +123,18 @@ async def main():
                 elif image_url:
                     media_link = upload_to_nostr_build(image_url, is_video=False)
 
-                # صياغة النص النهائي
-                post_text = f"**{title}**\n\n{summary}"
+                # صياغة المنشور الصافي
+                post_text = f"{title}\n\n{summary}"
                 if media_link:
                     post_text += f"\n\n{media_link}"
 
                 builder = EventBuilder.text_note(post_text)
                 await client.send_event_builder(builder)
-                print(f"تم النشر بنجاح: {title}")
+                print(f"تم بنجاح نشر خبر من {feed_url}: {title}")
                 save_history(post_id)
 
         except Exception as e:
-            print(f"خطأ أثناء معالجة {feed_url}: {e}")
+            print(f"خطأ في تغذية {feed_url}: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
