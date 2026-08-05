@@ -13,11 +13,12 @@ NOSTR_NSEC = os.environ.get("NOSTR_NSEC", "").strip()
 if not NOSTR_NSEC:
     raise ValueError("متغير NOSTR_NSEC مفقود في GitHub Secrets")
 
-DEFAULT_IMAGE_URL = "https://nostr.build/i/nostr_build_6443c2d4fa.jpg"
+# رابط صورة افتراضية مباشر وموثوق (يمكنك استبداله برابط لوجو قناتك)
+DEFAULT_IMAGE_URL = "https://i.nostr.build/8Z4v.jpg"
 
 # --- إعدادات معدل النشر ---
-MAX_POSTS_PER_RUN = 2       # عدد المنشورات الأقصى في الدورة الواحدة (كل 15 دقيقة)
-SLEEP_BETWEEN_POSTS = 90    # الانتظار بالثواني بين كل منشور والآخر
+MAX_POSTS_PER_RUN = 2        # عدد المنشورات الأقصى في الدورة الواحدة (كل 15 دقيقة)
+SLEEP_BETWEEN_POSTS = 90     # الانتظار بالثواني بين كل منشور والآخر
 
 # --- قائمة المصادر الشاملة ---
 RSS_FEEDS = [
@@ -111,6 +112,10 @@ def extract_media(entry, feed_url):
     return video_url, image_url
 
 def upload_to_nostr_build(media_url, is_video=False):
+    # إذا كانت الصورة هي الصورة الافتراضية، يرجع الرابط فوراً بدون إعادة رفع
+    if media_url == DEFAULT_IMAGE_URL:
+        return DEFAULT_IMAGE_URL
+
     try:
         resp = requests.get(media_url, timeout=15)
         if resp.status_code == 200:
@@ -124,7 +129,9 @@ def upload_to_nostr_build(media_url, is_video=False):
                     return data['data'][0]['url']
     except Exception as e:
         print(f"فشل الرفع لـ nostr.build: {e}")
-    return media_url
+    
+    # في حال وجود خطأ في الرابط الأصلي، يتم التبديل للصورة الافتراضية لمنع ظهور 404
+    return DEFAULT_IMAGE_URL
 
 async def main():
     history = load_history()
