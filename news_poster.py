@@ -6,6 +6,7 @@ import requests
 
 API_ID = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 NOSTR_NSEC = os.environ["NOSTR_NSEC"]
 
 CHANNELS = [
@@ -45,13 +46,12 @@ async def main():
     signer = NostrSigner.keys(keys)
     client = Client(signer)
 
-    # 2. إضافة الريلاي عبر RelayUrl
     await client.add_relay(RelayUrl.parse("wss://relay.damus.io"))
     await client.add_relay(RelayUrl.parse("wss://nos.lol"))
     await client.connect()
 
-    # 3. الاتصال بـ Telegram والنشر
-    async with TelegramClient('session_name', API_ID, API_HASH) as tg_client:
+    # 2. الاتصال بـ Telegram باستخدام البوت
+    async with TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN) as tg_client:
         for channel in CHANNELS:
             try:
                 messages = await tg_client.get_messages(channel, limit=1)
