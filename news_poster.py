@@ -1,7 +1,7 @@
 import os
 import asyncio
 from telethon import TelegramClient
-from nostr_sdk import Keys, Client, EventBuilder, Tag, NostrSigner
+from nostr_sdk import Keys, Client, EventBuilder, Tag, NostrSigner, RelayUrl
 import requests
 
 API_ID = int(os.environ["TELEGRAM_API_ID"])
@@ -40,16 +40,17 @@ def clean_text(text):
 async def main():
     history = load_history()
     
-    # 1. إعداد Nostr عبر Signer بدلاً من Keys مباشرة
+    # 1. إعداد Nostr
     keys = Keys.parse(NOSTR_NSEC)
     signer = NostrSigner.keys(keys)
     client = Client(signer)
 
-    await client.add_relay("wss://relay.damus.io")
-    await client.add_relay("wss://nos.lol")
+    # 2. إضافة الريلاي عبر RelayUrl
+    await client.add_relay(RelayUrl.parse("wss://relay.damus.io"))
+    await client.add_relay(RelayUrl.parse("wss://nos.lol"))
     await client.connect()
 
-    # 2. الاتصال بـ Telegram
+    # 3. الاتصال بـ Telegram والنشر
     async with TelegramClient('session_name', API_ID, API_HASH) as tg_client:
         for channel in CHANNELS:
             try:
